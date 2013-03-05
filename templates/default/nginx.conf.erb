@@ -1,69 +1,72 @@
-user <%= node['nginx']['user'] %><% if node['nginx']['user'] != node['nginx']['group'] %> <%= node['nginx']['group'] %><% end %>;
-worker_processes  <%= node['nginx']['worker_processes'] %>;
-<% if node['nginx']['daemon_disable'] -%>
-daemon off;
-<% end -%>
-<% if node['nginx']['worker_rlimit_nofile'] -%>
-worker_rlimit_nofile <%= node['nginx']['worker_rlimit_nofile'] %>;
-<% end -%>
+# this sets the user nginx will run as,
+#and the number of worker processes
+user travis travis;
+worker_processes  1;
 
-error_log  <%= node['nginx']['log_dir'] %>/error.log;
-pid        <%= node['nginx']['pid'] %>;
+# setup where nginx will log errors to
+# and where the nginx process id resides
+error_log  /var/log/nginx/error.log;
+pid        /var/run/nginx.pid;
 
 events {
-  worker_connections  <%= node['nginx']['worker_connections'] %>;
-<% if node['nginx']['multi_accept'] -%>
-  multi_accept on;
-<% end -%>
-<% if node['nginx']['event'] -%>
-  use <%= node['nginx']['event'] %>;
-<% end -%>
+  worker_connections  1024;
+  # set to on if you have more than 1 worker_processes
+  accept_mutex off;
 }
 
 http {
-  <% if node.recipe?('nginx::naxsi_module') %>
-  include       <%= node['nginx']['dir'] %>/naxsi_core.rules;
-  <% end %>
+  include       /etc/nginx/mime.types;
 
-  include       <%= node['nginx']['dir'] %>/mime.types;
-  default_type  application/octet-stream;
+  default_type application/octet-stream;
+  access_log /tmp/nginx.access.log combined;
 
-  <% unless node['nginx']['disable_access_log'] -%>
-  access_log	<%= node['nginx']['log_dir'] %>/access.log;
-  <% end %>
+  # use the kernel sendfile
+  sendfile        on;
+  # prepend http headers before sendfile()
+  tcp_nopush     on;
 
-  sendfile <%= node['nginx']['sendfile'] %>;
-  tcp_nopush on;
-  tcp_nodelay on;
+  keepalive_timeout  5;
+  tcp_nodelay        on;
 
-  <% if node['nginx']['keepalive'] == "on" %>
-  keepalive_timeout  <%= node['nginx']['keepalive_timeout'] %>;
-  <% end %>
+  gzip  on;
+  gzip_vary on;
+  gzip_min_length 500;
 
-  gzip  <%= node['nginx']['gzip'] %>;
-  <% if node['nginx']['gzip'] == "on" %>
-  gzip_http_version <%= node['nginx']['gzip_http_version'] %>;
-  gzip_comp_level <%= node['nginx']['gzip_comp_level'] %>;
-  gzip_proxied <%= node['nginx']['gzip_proxied'] %>;
-  gzip_vary <%= node['nginx']['gzip_vary'] %>;
-  <% if node['nginx']['gzip_buffers'] -%>
-  gzip_buffers <%= node['nginx']['gzip_buffers'] %>;
-  <% end -%>
-  gzip_types <%= node['nginx']['gzip_types'].join(' ') %>;
-  gzip_min_length  1000;
-  gzip_disable     "MSIE [1-6]\.";
-  <% end %>
+  gzip_disable "MSIE [1-6]\.(?!.*SV1)";
+  gzip_types text/plain text/xml text/css
+     text/comma-separated-values
+     text/javascript application/x-javascript
+     application/atom+xml image/x-icon;
 
-  server_names_hash_bucket_size <%= node['nginx']['server_names_hash_bucket_size'] %>;
-  types_hash_max_size <%= node['nginx']['types_hash_max_size'] %>;
-  types_hash_bucket_size <%= node['nginx']['types_hash_bucket_size'] %>;
-  <% if node['nginx']['proxy_read_timeout'] -%>
-  proxy_read_timeout <%= node['nginx']['proxy_read_timeout'] %>;
-  <% end -%>
-  <% if node['nginx']['client_max_body_size'] -%>
-  client_max_body_size <%= node['nginx']['client_max_body_size'] %>;
-  <% end -%>
+  # use the socket we configured in our unicorn.rb
+  upstream unicorn_server {
+    server unix:/usr/local/www/node-tail/current/tmp/sockets/unicorn.sock
+        fail_timeout=0;
+  }
 
-  include <%= node['nginx']['dir'] %>/conf.d/*.conf;
-  include <%= node['nginx']['dir'] %>/sites-enabled/*;
+  # configure the virtual host
+  server {
+    # replace with your domain name
+    # server_name my-sinatra-app.com;
+    # replace this with your static Sinatra app files, root + public
+    root /usr/local/www/node-tail/current/public;
+    # port to listen for requests on
+    listen 80;
+    # maximum accepted body size of client request
+    client_max_body_size 4G;
+    # the server will close connections after this time
+    keepalive_timeout 5;
+
+    location / {
+      try_files $uri @app;
+    }
+
+    location @app {
+      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+      proxy_set_header Host $http_host;
+      proxy_redirect off;
+      # pass to the upstream unicorn server mentioned above
+      proxy_pass http://unicorn_server;
+    }
+  }
 }
